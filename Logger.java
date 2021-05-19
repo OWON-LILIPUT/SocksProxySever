@@ -1,5 +1,5 @@
 
-package socksproxysever;
+package com.zhbi.socksproxysever;
 
 import java.util.Date;
 
@@ -13,7 +13,7 @@ class Logger {
     static final int LINE_STACK_DEPTH = 3;
 
     static final String TIME_FORMAT = "%1$tF %1$tT";
-    static final String LOG_FORMAT = "[%04d] %s %s %s %s %d\n%s\n";
+    static final String LOG_FORMAT = "[%04d] %s %s %s %d %s(): %s\n";
 
     static int logNumber = 1;
 
@@ -55,7 +55,7 @@ class Logger {
 
     public static void info(String fmt, Object... info) {
         logger(LOG_FORMAT, logNumber, "INFO:",
-            localDateTime(), fileName(), methodName(), lineNumber(),
+            localDateTime(), fileName(), lineNumber(), methodName(),
             String.format(fmt, info));
 
         logNumber++;
@@ -63,7 +63,7 @@ class Logger {
 
     public static void warn(String fmt, Object... warn) {
         logger(LOG_FORMAT, logNumber, "WARN:",
-            localDateTime(), fileName(), methodName(), lineNumber(),
+            localDateTime(), fileName(), lineNumber(), methodName(),
             String.format(fmt, warn));
 
         logNumber++;
@@ -71,7 +71,7 @@ class Logger {
 
     public static void error(String fmt, Object... err) {
         logger(LOG_FORMAT, logNumber, "ERROR:",
-            localDateTime(), fileName(), methodName(), lineNumber(),
+            localDateTime(), fileName(), lineNumber(), methodName(),
             String.format(fmt, err));
 
         logNumber++;
