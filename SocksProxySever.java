@@ -54,20 +54,21 @@ class Auth {
 
     static final int HANDSHAKE_MAX_LEN = 8;
     static final byte RSV              = 0x00;
-    static final int BUF_SIZE          = 10240;
+    static final int BUF_SIZE          = 1024;
     static final int DEFAULT_PORT      = 1080;
     static final String DEFAULT_UNAME  = "zhbi98";
     static final String DEFAULT_PASSWD = "123456";
 }
 
 
-class MethodUnamePasswd {
-    static byte method   = Auth.NO_AUTHENTICATION;
-    static String uname  = Auth.DEFAULT_UNAME;
+class LoginOptions {
+    static byte method = Auth.NO_AUTHENTICATION;
+    static String uname = Auth.DEFAULT_UNAME;
     static String passwd = Auth.DEFAULT_PASSWD;
+    static boolean login = false;
 }
 
-class CmdLine {
+class KeyBoardEventBlock {
     public static String gets() {
         String string = null;
         InputStreamReader reader = null;
@@ -321,12 +322,12 @@ class RequstBlock {
 
     public static int needConnectPort(InputStream inputs) {
         int pNum = 0;
-        byte[] destPort = new byte[2];
+        byte[] dstPort = new byte[2];
 
         try {
-            inputs.read(destPort);
-            pNum = (ByteBuffer.wrap(destPort).asShortBuffer().get()) & 0xffff;
-            Logger.info("P[0]:%x, P[1]:%x, %d", destPort[0], destPort[1], pNum);
+            inputs.read(dstPort);
+            pNum = (ByteBuffer.wrap(dstPort).asShortBuffer().get()) & 0xffff;
+            Logger.info("P[0]:%x, P[1]:%x, %d", dstPort[0], dstPort[1], pNum);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -336,71 +337,52 @@ class RequstBlock {
 
 
 class LoginBlock {
-    byte socksVersion = 0x00;
-    boolean methodExist = false;
-    boolean login = false;
+    static byte socksVersion = 0x00;
+    static boolean methodExist = false;
 
-    public boolean login(InputStream ips, OutputStream ops) {
-        this.socksVersion = ShakeHandsBlock.socksVersion(ips);
+    public static void login(InputStream ips, OutputStream ops) {
+        socksVersion = ShakeHandsBlock.socksVersion(ips);
         Logger.info("Socks version:%d", socksVersion);
-        if (this.socksVersion == Auth.VERSION5) {
+        if (socksVersion == Auth.VERSION5) {
             ShakeHandsBlock.recvAuthMethods(ips);
-            this.methodExist = ShakeHandsBlock.methodExists(MethodUnamePasswd.method);
 
-            if (this.methodExist == true) {
+            methodExist = ShakeHandsBlock.methodExists(
+                LoginOptions.method);
+
+            if (methodExist == true) {
                 Logger.info("Method exists");
-                ShakeHandsBlock.sendAuthMethod(ops, MethodUnamePasswd.method);
 
-                if (MethodUnamePasswd.method == Auth.USERNAME_PASSWORD) {
+                ShakeHandsBlock.sendAuthMethod(
+                    ops, LoginOptions.method);
+
+                if (LoginOptions.method == Auth.USERNAME_PASSWORD) {
                     Logger.info("USERNAME/PASSWORD");
                     AuthBlock authcb = new AuthBlock(ips, ops);
-                    this.login = authcb.authAccount(MethodUnamePasswd.uname, MethodUnamePasswd.passwd);
-                    authcb.sendAuthResult(this.login);
-                } else if (MethodUnamePasswd.method == Auth.NO_AUTHENTICATION) {
+
+                    LoginOptions.login = authcb.authAccount(
+                        LoginOptions.uname, LoginOptions.passwd);
+
+                    authcb.sendAuthResult(LoginOptions.login);
+                } else if (LoginOptions.method == Auth.NO_AUTHENTICATION) {
                     Logger.info("NO_AUTHENTICATION");
-                    this.login = true;
-                } else {
-                    Logger.info("Others methods");
-                }
-                return this.login;
-            } else {
-                Logger.info("No acceptable methods");
-            }
-        }
-        return false;
-    }
-}
-
-class RelayBlock {
-    InputStream recvFromClient  = null;
-    OutputStream sendToClient   = null;
-    InputStream recvFromSever   = null;
-    OutputStream sendToSever    = null;
-    ByteArrayOutputStream pbuff = null;
-    boolean login = false;
-
-    public void relay(Socket socket) {
-        try {
-            this.recvFromClient = socket.getInputStream();
-            this.sendToClient = socket.getOutputStream();            
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-        if (!this.login) {
-            LoginBlock logincb = new LoginBlock();
-            this.login = logincb.login(this.recvFromClient, this.sendToClient);
-        }
-
-        if (this.login) {
-            Logger.info("RELAY START");
-        }
+                    LoginOptions.login = true;
+                } else
+                    Logger.info("Others auth methods");
+            } else
+                Logger.error("No acceptable methods");
+        } else
+            Logger.error("Socks version no supported");
     }
 }
 
 
 class ServeThread implements Runnable {
     private final Socket socket;
+    InputStream recvFromClient  = null;
+    OutputStream sendToClient   = null;
+    InputStream recvFromSever   = null;
+    OutputStream sendToSever    = null;
+    ByteArrayOutputStream pbuff = null;
 
     ServeThread(Socket accept) {
         this.socket = accept;
@@ -408,8 +390,126 @@ class ServeThread implements Runnable {
 
     @Override
     public void run() {
-        RelayBlock relaycb = new RelayBlock();
-        relaycb.relay(this.socket);
+        try {
+            this.recvFromClient = this.socket.getInputStream();
+            this.sendToClient = this.socket.getOutputStream();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        LoginBlock.login(this.recvFromClient, this.sendToClient);
+        if (LoginOptions.login == false)
+            return;
+        Logger.error("%s Login success", LoginOptions.uname);
+
+        byte cmdType = RequstBlock.getCommand(this.recvFromClient);
+        String dstAddress = RequstBlock.needLinkAddress(this.recvFromClient);
+        int dstPort = RequstBlock.needConnectPort(this.recvFromClient);
+        Logger.info("Link ip address: %s:%d", dstAddress, dstPort);
+
+        ByteBuffer responseClient = ByteBuffer.allocate(10);
+        responseClient.put(Auth.VERSION5);
+
+        Object socketType = null;
+        if (cmdType == Auth.CONNECT) {
+            try {
+                socketType = new Socket(dstAddress, dstPort);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            responseClient.put(Auth.SUCCEEDED);
+        } else if (cmdType == Auth.BIND) {
+            try {
+                socketType = new ServerSocket(dstPort);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            responseClient.put(Auth.SUCCEEDED);
+        } else if (cmdType == Auth.UDP) {
+            Logger.info("UDP ASSOCIATE");
+        } else {
+            responseClient.put(Auth.CONNECTION_REFUSED);
+            socketType = null;
+        }
+        responseClient.put(Auth.RSV);
+        responseClient.put((byte)0x01);
+        responseClient.put(this.socket.getLocalAddress().getAddress());
+        Short localPort = (short)((this.socket.getLocalPort()) & 0xFFFF);
+        responseClient.putShort(localPort);
+        byte[] responseArray = new byte[10];
+        responseArray = responseClient.array();
+        try {
+            this.sendToClient.write(responseArray);
+            this.sendToClient.flush();            
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        if (socketType != null && cmdType == Auth.BIND) {
+            ServerSocket ss = (ServerSocket)socketType;
+            try {
+                socketType = ss.accept();
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    ss.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        Socket checkSocket = (Socket)socketType;
+        if (checkSocket != null) {
+            // Count Down Latch
+            CountDownLatch latch = new CountDownLatch(1);
+            try {
+                recvFromSever = checkSocket.getInputStream();
+                sendToSever = checkSocket.getOutputStream();                
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            if (checkSocket.getPort() == 80) {
+                // Create cache
+                pbuff = new ByteArrayOutputStream();
+            }
+            relay(latch, this.recvFromClient, this.sendToSever, pbuff);
+            relay(latch, this.recvFromSever, this.sendToClient, pbuff);
+            try {
+                // countDown: Count down latch unfinished block here
+                latch.await();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    static final void relay(final CountDownLatch latch, final InputStream input, final OutputStream output, final OutputStream cache) {
+        new Thread() {
+            @Override
+            public void run() {
+                byte[] bytes = new byte[Auth.BUF_SIZE];
+                int n = 0;
+                try {
+                    while ((n = input.read(bytes)) > 0) {
+                        output.write(bytes, 0, n);
+                        output.flush();
+                        if (cache != null) {
+                            synchronized (cache) {
+                                cache.write(bytes, 0, n);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+                if (latch != null) {
+                    latch.countDown();
+                }
+            };
+        }.start();
     }
 }
 
@@ -420,8 +520,8 @@ class SeverControlBlock {
         ServerSocket server = new ServerSocket(listenpn);
 
         while ((accept = server.accept()) != null) {
-            SocketAddress ssddr = accept.getRemoteSocketAddress();
-            String remote = ssddr.toString();
+            // SocketAddress ssddr = accept.getRemoteSocketAddress();
+            // String remote = ssddr.toString();
             Thread pthread = new Thread(new ServeThread(accept));
             pthread.start();
         }
@@ -442,26 +542,29 @@ public class SocksProxySever {
         Logger.info("Socks5 proxy sever %s", "127.0.0.1");
         Logger.info("Sever current time %s", Logger.localDateTime());
 
-        switch (CmdLine.gets().charAt(0)) {
+        switch (KeyBoardEventBlock.gets().charAt(0)) {
             case 'p':
                 Logger.info("NO AUTHENTICATION");
                 Logger.info("Please set listen:");
-                listen = CmdLine.getn();
-                MethodUnamePasswd.method = Auth.NO_AUTHENTICATION;
+                listen = KeyBoardEventBlock.getn();
+                LoginOptions.method = Auth.NO_AUTHENTICATION;
                 break;
             case 'u':
                 Logger.info("USERNAME/PASSWORD");
                 Logger.info("Please set uname:");
-                MethodUnamePasswd.uname = CmdLine.gets();
+                LoginOptions.uname = KeyBoardEventBlock.gets();
                 Logger.info("Please set passwd:");
-                MethodUnamePasswd.passwd = CmdLine.gets();
-                MethodUnamePasswd.method = Auth.USERNAME_PASSWORD;
+                LoginOptions.passwd = KeyBoardEventBlock.gets();
+                Logger.info("Please set listen:");
+                listen = KeyBoardEventBlock.getn();
+
+                LoginOptions.method = Auth.USERNAME_PASSWORD;
                 break;
             case 'h':
                 Logger.info("This is Socks5 Proxysever");
                 break;
         }
-        SeverControlBlock.severdns();  
+        SeverControlBlock.severdns(); 
         Logger.info("Listening on:%d", listen);
         SeverControlBlock.start(listen);
     }
