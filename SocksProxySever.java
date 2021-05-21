@@ -53,6 +53,7 @@ class Auth {
     static final byte ADDRESS_TYPE_NOT_SUPPORTED        = 0x08;
 
     static final int HANDSHAKE_MAX_LEN = 8;
+    static final int RESPONSE_MAX_LEN  = 10;
     static final byte RSV              = 0x00;
     static final int BUF_SIZE          = 1024;
     static final int DEFAULT_PORT      = 1080;
@@ -252,11 +253,14 @@ class RequstBlock {
     public static byte getCommand(InputStream inputs) {
         byte[] requst = new byte[3];
         /**
-         * 4bytes
-         * VERSION COMMAND RSV ADDRESS_TYPE
-         * 0x05    0x01    --- IPV4/IPV6/DOMAIN
-         * Address type:
-         * IPV4/IPV6/DOMAIN
+         * 3bytes
+         * [VERSION COMMAND RSV]   ADDRESS_TYPE     ADDR     PORT
+         * [0x05     0x01   ---] IPV4/IPV6/DOMAIN 1-255byte 2byte
+         * COMMAND:
+         * 0x01: CONNECT Connect upstream server
+         * 0x02: BIND binding, the client will receive the link from the proxy server, 
+         *       the famous FTP passive mode
+         * 0x03: UDP ASSOCIATE UDP relay
          */
         try {
             inputs.read(requst);
@@ -270,12 +274,14 @@ class RequstBlock {
     public static byte needLinkAddressType(InputStream inputs) {
         byte addressType = 0x00;
         /**
-         * 4bytes
-         * VERSION COMMAND RSV ADDRESS_TYPE
-         * 0x05    0x01    --- IPV4/IPV6/DOMAIN
+         * 1bytes
+         * VERSION COMMAND RSV [  ADDRESS_TYPE  ]  ADDR     PORT
+         * 0x05    0x01    --- [IPV4/IPV6/DOMAIN] 1-255byte 2byte
          *
-         * Address type:
-         * IPV4/IPV6/DOMAIN
+         * ADDRESS_TYPE:
+         * 0x01: IPV4
+         * 0x03: DOMAIN
+         * 0x04: IPV6
          */
         try {
             addressType = (byte)inputs.read();
@@ -289,7 +295,14 @@ class RequstBlock {
     public static String needLinkAddress(InputStream inputs) {
         String netAddress = null;
         byte[] dstAddress = null;
-
+        /**
+         * 1-255bytes
+         * VERSION COMMAND RSV   ADDRESS_TYPE   [  ADDR   ] PORT
+         * 0x05    0x01    --- IPV4/IPV6/DOMAIN [1-255byte] 2byte
+         *
+         * ADDR:
+         * [139, 159, 246, 60]
+         */
         try {
             byte type = needLinkAddressType(inputs);
             switch (type) {
@@ -323,11 +336,18 @@ class RequstBlock {
     public static int needConnectPort(InputStream inputs) {
         int pNum = 0;
         byte[] dstPort = new byte[2];
-
+        /**
+         * 2bytes
+         * VERSION COMMAND RSV   ADDRESS_TYPE     ADDR    [PORT ]
+         * 0x05    0x01    --- IPV4/IPV6/DOMAIN 1-255byte [2byte]
+         *
+         * PORT:
+         * [0x04, 0x38]
+         */
         try {
             inputs.read(dstPort);
             pNum = (ByteBuffer.wrap(dstPort).asShortBuffer().get()) & 0xffff;
-            Logger.info("P[0]:%x, P[1]:%x, %d", dstPort[0], dstPort[1], pNum);
+            Logger.info("P[0]:%x, P[1]:%x ->%d", dstPort[0], dstPort[1], pNum);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -431,29 +451,42 @@ class ServeThread implements Runnable {
             responseClient.put(Auth.CONNECTION_REFUSED);
             socketType = null;
         }
+        // RSV: reserved text
         responseClient.put(Auth.RSV);
-        responseClient.put((byte)0x01);
+        // Address type: IPV4
+        responseClient.put((byte)Auth.IPV4);
+        // Array content: [127, 0, 0, 1]
         responseClient.put(this.socket.getLocalAddress().getAddress());
+        // listen on: 1080
         Short localPort = (short)((this.socket.getLocalPort()) & 0xFFFF);
         responseClient.putShort(localPort);
-        byte[] responseArray = new byte[10];
+        byte[] responseArray = new byte[Auth.RESPONSE_MAX_LEN];
+        /**
+         * Dst port 1080 split into high 8 bits, 
+         * low 8 bits, two bytes for storage
+         * high 8 bits is 0x04, low 8 bits is 0x38
+         * so response total 10 bytes.
+         * Array content: [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38]
+         */
         responseArray = responseClient.array();
         try {
+            // Socket write 10 bytes
             this.sendToClient.write(responseArray);
+            // Immediately renew cache buffer
             this.sendToClient.flush();            
         } catch (IOException e) {
             e.printStackTrace();
         }
 
         if (socketType != null && cmdType == Auth.BIND) {
-            ServerSocket ss = (ServerSocket)socketType;
+            ServerSocket severSocket = (ServerSocket)socketType;
             try {
-                socketType = ss.accept();
+                socketType = severSocket.accept();
             } catch (Exception e) {
                 e.printStackTrace();
             } finally {
                 try {
-                    ss.close();
+                    severSocket.close();
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -472,11 +505,18 @@ class ServeThread implements Runnable {
             }
 
             if (checkSocket.getPort() == 80) {
-                // Create cache
+                // Create cache buffer
                 pbuff = new ByteArrayOutputStream();
             }
-            relay(latch, this.recvFromClient, this.sendToSever, pbuff);
-            relay(latch, this.recvFromSever, this.sendToClient, pbuff);
+            // relay(latch, this.recvFromClient, this.sendToSever, pbuff);
+            // relay(latch, this.recvFromSever, this.sendToClient, pbuff);
+            Thread clientToSever = new Thread(
+                new RelayThread(latch, this.recvFromClient, this.sendToSever, pbuff));
+            clientToSever.start();
+
+            Thread severToClient = new Thread(
+                new RelayThread(latch, this.recvFromSever, this.sendToClient, pbuff));
+            severToClient.start();
             try {
                 // countDown: Count down latch unfinished block here
                 latch.await();
@@ -485,31 +525,43 @@ class ServeThread implements Runnable {
             }
         }
     }
+}
 
-    static final void relay(final CountDownLatch latch, final InputStream input, final OutputStream output, final OutputStream cache) {
-        new Thread() {
-            @Override
-            public void run() {
-                byte[] bytes = new byte[Auth.BUF_SIZE];
-                int n = 0;
-                try {
-                    while ((n = input.read(bytes)) > 0) {
-                        output.write(bytes, 0, n);
-                        output.flush();
-                        if (cache != null) {
-                            synchronized (cache) {
-                                cache.write(bytes, 0, n);
-                            }
-                        }
+
+class RelayThread implements Runnable {
+    final CountDownLatch latch;
+    final InputStream input;
+    final OutputStream output;
+    final OutputStream buf;
+
+    RelayThread(final CountDownLatch latch, final InputStream input, 
+        final OutputStream output, final OutputStream buf) {
+        this.latch = latch;
+        this.input = input;
+        this.output = output;
+        this.buf = buf;
+    }
+
+    @Override
+    public void run() {
+        int n = 0;
+        byte[] bytes = new byte[Auth.BUF_SIZE];
+        try {
+            while ((n = input.read(bytes)) > 0) {
+                output.write(bytes, 0, n);
+                output.flush();
+                if (buf != null) {
+                    synchronized (buf) {
+                        buf.write(bytes, 0, n);
                     }
-                } catch (Exception e) {
-                    e.printStackTrace();
                 }
-                if (latch != null) {
-                    latch.countDown();
-                }
-            };
-        }.start();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        if (latch != null) {
+            latch.countDown();
+        }
     }
 }
 
@@ -561,7 +613,7 @@ public class SocksProxySever {
                 LoginOptions.method = Auth.USERNAME_PASSWORD;
                 break;
             case 'h':
-                Logger.info("This is Socks5 Proxysever");
+                Logger.info("This is Socks5 proxy sever");
                 break;
         }
         SeverControlBlock.severdns(); 
