@@ -347,7 +347,7 @@ class RequstBlock {
         try {
             inputs.read(dstPort);
             pNum = (ByteBuffer.wrap(dstPort).asShortBuffer().get()) & 0xffff;
-            Logger.info("P[0]:%x, P[1]:%x ->%d", dstPort[0], dstPort[1], pNum);
+            Logger.info("P[0]:%x, P[1]:%x P:%d", dstPort[0], dstPort[1], pNum);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -390,7 +390,9 @@ class LoginBlock {
                     Logger.info("Others auth methods");
             } else
                 Logger.error("No acceptable methods");
-        } else
+        } else if (socksVersion == Auth.VERSION4)
+            LoginOptions.login = true;
+        else
             Logger.error("Socks version no supported");
     }
 }
@@ -403,6 +405,7 @@ class ServeThread implements Runnable {
     InputStream recvFromSever   = null;
     OutputStream sendToSever    = null;
     ByteArrayOutputStream pbuff = null;
+    Object socketType = null;
 
     ServeThread(Socket accept) {
         this.socket = accept;
@@ -418,78 +421,118 @@ class ServeThread implements Runnable {
         }
 
         LoginBlock.login(this.recvFromClient, this.sendToClient);
-        if (LoginOptions.login == false)
-            return;
-        Logger.error("%s Login success", LoginOptions.uname);
 
-        byte cmdType = RequstBlock.getCommand(this.recvFromClient);
-        String dstAddress = RequstBlock.needLinkAddress(this.recvFromClient);
-        int dstPort = RequstBlock.needConnectPort(this.recvFromClient);
-        Logger.info("Link ip address: %s:%d", dstAddress, dstPort);
+        if (LoginBlock.socksVersion == Auth.VERSION5) {
+            if (LoginOptions.login == false)
+                return;
+            Logger.info("%s Login success", LoginOptions.uname);
 
-        ByteBuffer responseClient = ByteBuffer.allocate(10);
-        responseClient.put(Auth.VERSION5);
+            byte cmdType = RequstBlock.getCommand(this.recvFromClient);
+            String dstAddress = RequstBlock.needLinkAddress(this.recvFromClient);
+            int dstPort = RequstBlock.needConnectPort(this.recvFromClient);
+            Logger.info("Link ip address: %s:%d", dstAddress, dstPort);
 
-        Object socketType = null;
-        if (cmdType == Auth.CONNECT) {
-            try {
-                socketType = new Socket(dstAddress, dstPort);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            responseClient.put(Auth.SUCCEEDED);
-        } else if (cmdType == Auth.BIND) {
-            try {
-                socketType = new ServerSocket(dstPort);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            responseClient.put(Auth.SUCCEEDED);
-        } else if (cmdType == Auth.UDP) {
-            Logger.info("UDP ASSOCIATE");
-        } else {
-            responseClient.put(Auth.CONNECTION_REFUSED);
-            socketType = null;
-        }
-        // RSV: reserved text
-        responseClient.put(Auth.RSV);
-        // Address type: IPV4
-        responseClient.put((byte)Auth.IPV4);
-        // Array content: [127, 0, 0, 1]
-        responseClient.put(this.socket.getLocalAddress().getAddress());
-        // listen on: 1080
-        Short localPort = (short)((this.socket.getLocalPort()) & 0xFFFF);
-        responseClient.putShort(localPort);
-        byte[] responseArray = new byte[Auth.RESPONSE_MAX_LEN];
-        /**
-         * Dst port 1080 split into high 8 bits, 
-         * low 8 bits, two bytes for storage
-         * high 8 bits is 0x04, low 8 bits is 0x38
-         * so response total 10 bytes.
-         * Array content: [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38]
-         */
-        responseArray = responseClient.array();
-        try {
-            // Socket write 10 bytes
-            this.sendToClient.write(responseArray);
-            // Immediately renew cache buffer
-            this.sendToClient.flush();            
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+            ByteBuffer responseClient = ByteBuffer.allocate(10);
+            responseClient.put(Auth.VERSION5);
 
-        if (socketType != null && cmdType == Auth.BIND) {
-            ServerSocket severSocket = (ServerSocket)socketType;
-            try {
-                socketType = severSocket.accept();
-            } catch (Exception e) {
-                e.printStackTrace();
-            } finally {
+            // Object socketType = null; // Currently using instance attributes
+            if (cmdType == Auth.CONNECT) {
                 try {
-                    severSocket.close();
+                    socketType = new Socket(dstAddress, dstPort);
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
+                responseClient.put(Auth.SUCCEEDED);
+            } else if (cmdType == Auth.BIND) {
+                try {
+                    socketType = new ServerSocket(dstPort);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                responseClient.put(Auth.SUCCEEDED);
+            } else if (cmdType == Auth.UDP) {
+                Logger.info("UDP ASSOCIATE");
+            } else {
+                responseClient.put(Auth.CONNECTION_REFUSED);
+                socketType = null;
+            }
+            // RSV: reserved text
+            responseClient.put(Auth.RSV);
+            // Address type: IPV4, finally, the address needs to be converted to an IPV4 address
+            responseClient.put((byte)Auth.IPV4);
+            // Array content: [127, 0, 0, 1]
+            responseClient.put(this.socket.getLocalAddress().getAddress());
+            // listen on: 1080
+            Short localPort = (short)((this.socket.getLocalPort()) & 0xFFFF);
+            responseClient.putShort(localPort);
+            byte[] responseArray = new byte[Auth.RESPONSE_MAX_LEN];
+            /**
+             * Dst port 1080 split into high 8 bits and 
+             * low 8 bits, two bytes for storage
+             * high 8 bits is 0x04, low 8 bits is 0x38
+             * so response total 10 bytes.
+             * Array content: [0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x04, 0x38]
+             */
+            responseArray = responseClient.array();
+            try {
+                // Socket write 10 bytes
+                this.sendToClient.write(responseArray);
+                // Immediately renew cache buffer
+                this.sendToClient.flush();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            if (socketType != null && cmdType == Auth.BIND) {
+                ServerSocket severSocket = (ServerSocket)socketType;
+                try {
+                    socketType = severSocket.accept();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                } finally {
+                    try {
+                        severSocket.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        } else {
+            try {
+                /**
+                 * Requst message format
+                 * VN   CD        DSTPORT DSTIP           USERID    NULL
+                 * 0x04 0x01/0x02 80      13.224.161.23   client id 0x00
+                 */
+                // Read 3bytes CD and DSTPORT, the version field has been read 
+                // in the login version verification
+                byte[] socks4Requst = new byte[3];
+                this.recvFromClient.read(socks4Requst);
+                int socks4DstPort = ByteBuffer.wrap(socks4Requst, 1, 2).asShortBuffer().get() & 0xFFFF;
+                // Read 4bytes dst address
+                byte[] dstAddress = new byte[4];
+                this.recvFromClient.read(dstAddress);
+                InetAddress ipv4 = InetAddress.getByAddress(dstAddress);
+                String netAddress = ipv4.getHostAddress();
+                // Read USERID
+                this.recvFromClient.read();
+
+                /**
+                 * Response message format
+                 * VN   CD                  DSTPORT DSTIP
+                 * 0x04 0x5A/0x5B/0x5C/0x5D 80      13.224.161.23
+                 */
+                byte[] socks4Response = new byte[8];
+                try {
+                    socketType = new Socket(netAddress, socks4DstPort);
+                    socks4Response[1] = 0x5a;
+                } catch (Exception e) {
+                    socks4Response[1] = 0x5b;
+                }
+                this.sendToClient.write(socks4Response);
+                this.sendToClient.flush();                
+            } catch (IOException e) {
+                e.printStackTrace();
             }
         }
 
@@ -499,7 +542,7 @@ class ServeThread implements Runnable {
             CountDownLatch latch = new CountDownLatch(1);
             try {
                 recvFromSever = checkSocket.getInputStream();
-                sendToSever = checkSocket.getOutputStream();                
+                sendToSever = checkSocket.getOutputStream();
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -510,13 +553,13 @@ class ServeThread implements Runnable {
             }
             // relay(latch, this.recvFromClient, this.sendToSever, pbuff);
             // relay(latch, this.recvFromSever, this.sendToClient, pbuff);
-            Thread clientToSever = new Thread(
+            Thread clientToDstsever = new Thread(
                 new RelayThread(latch, this.recvFromClient, this.sendToSever, pbuff));
-            clientToSever.start();
+            clientToDstsever.start();
 
-            Thread severToClient = new Thread(
+            Thread dstseverToClient = new Thread(
                 new RelayThread(latch, this.recvFromSever, this.sendToClient, pbuff));
-            severToClient.start();
+            dstseverToClient.start();
             try {
                 // countDown: Count down latch unfinished block here
                 latch.await();
@@ -584,6 +627,17 @@ class SeverControlBlock {
         java.security.Security.setProperty(
             "networkaddress.cache.ttl", "86400");
     }
+
+    public static void usage() {
+        Logger.info("%s",
+            "\nusage: [options]\n" +
+            "options: \n" +
+            "  -a <address>         Local Address to bind (default: 127.0.0.1).\n" +
+            "  -p <port>            Port number to bind (default: 1080).\n" +
+            "  -u <path/to/passwd>  The path to passwd.\n" +
+            "  -d                   Run as a daemon.\n" +
+            "  -h                   Show this help message.\n");
+    }
 }
 
 
@@ -593,6 +647,8 @@ public class SocksProxySever {
     public static void main(String[] args) throws IOException {
         Logger.info("Socks5 proxy sever %s", "127.0.0.1");
         Logger.info("Sever current time %s", Logger.localDateTime());
+
+        SeverControlBlock.usage();
 
         switch (KeyBoardEventBlock.gets().charAt(0)) {
             case 'p':
@@ -613,7 +669,7 @@ public class SocksProxySever {
                 LoginOptions.method = Auth.USERNAME_PASSWORD;
                 break;
             case 'h':
-                Logger.info("This is Socks5 proxy sever");
+                SeverControlBlock.usage();
                 break;
         }
         SeverControlBlock.severdns(); 

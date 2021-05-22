@@ -4,15 +4,14 @@
 [![Build Status](https://travis-ci.com/zhbi98/SocksProxySever.svg?branch=master)](https://travis-ci.com/zhbi98/SocksProxySever)
 ![Lines of code](https://img.shields.io/tokei/lines/github/zhbi98/SocksProxySever)
 
-这是一个使用 Java 实现的 Socks5 代理协议的服务器, 
-这个代理服务器可直接运行于 windows 中, 目前已经在
-Firefox 浏览器，微信，QQ 中测试通过。
+这是一个使用 Java 实现的 SOCKS4, SOCKS5 代理协议的代理服务器，本项目主要用来研究 SOCKS 代理协议，
+该协议设计之初是为了让有权限的用户可以穿过内部局域网防火墙的限制，来访问外部资源。 这个代理服务器
+可直接运行于 Windows 中, 该代理服务器目前已经在 360 极速浏览器，Firefox 浏览器，微信，QQ 中通过测试。
 
 
 # 运行环境
 
-本项目主要用来研究 Socks 代理协议，该协议设计之初是为了让有权限的用户可以穿过内部局域网防火墙的限制，
-来访问外部资源。本项目使用 NetBeans 配合 JDK 开发, NetBeans8.0 以及 JDK8.0 以上版本的均可以运行。
+本项目使用 NetBeans 配合 JDK 开发, NetBeans8.0 以及 JDK8.0 以上版本的均可以运行。
 亦可使用其他集成开发环境, 例如 Eclipse, IntelliJ IDEA 配合使用 JDK8.0 以上版本均可构建此项目。
 
 **使用注意事项：**
@@ -30,6 +29,7 @@ Firefox 浏览器，微信，QQ 中测试通过。
 # 更新日志
 - 增加用户名密码认证登录。
 - 修改用户名密码认证登录的逻辑问题。
+- 增加 SOCKS4 代理协议的支持。
 
 
 # 许可证
