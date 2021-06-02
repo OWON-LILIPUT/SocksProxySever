@@ -54,24 +54,24 @@ class Logger {
     }
 
     public static void info(String fmt, Object... info) {
-        logger(LOG_FORMAT, logNumber, "INFO:",
-            localDateTime(), fileName(), lineNumber(), methodName(),
+        logger(LOG_FORMAT, logNumber, localDateTime(),
+            "INFO:", fileName(), lineNumber(), methodName(),
             String.format(fmt, info));
 
         logNumber++;
     }
 
     public static void warn(String fmt, Object... warn) {
-        logger(LOG_FORMAT, logNumber, "WARN:",
-            localDateTime(), fileName(), lineNumber(), methodName(),
+        logger(LOG_FORMAT, logNumber, localDateTime(),
+            "WARN:", fileName(), lineNumber(), methodName(),
             String.format(fmt, warn));
 
         logNumber++;
     }
 
     public static void error(String fmt, Object... err) {
-        logger(LOG_FORMAT, logNumber, "ERROR:",
-            localDateTime(), fileName(), lineNumber(), methodName(),
+        logger(LOG_FORMAT, logNumber, localDateTime(),
+            "ERROR:", fileName(), lineNumber(), methodName(),
             String.format(fmt, err));
 
         logNumber++;
